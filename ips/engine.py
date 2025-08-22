@@ -1,16 +1,13 @@
 # ips/engine.py
 
-from scapy.all import sniff, IP
+from scapy.all import sniff, IP, TCP, ICMP # <-- MODIFIED: Import TCP and ICMP
 import logging
 from collections import deque
+import socket
 
-# --- THIS IS THE FIX ---
-# We changed the relative imports (e.g., .state_manager) to absolute imports (e.g., ips.state_manager)
-# This tells Python to look for the 'ips' package from the root directory.
 from ips.state_manager import StateManager
 from ips.prevention import PreventionManager
 from ips.detection_rules import DetectionEngine
-import config
 import config
 
 class IPSEngine:
@@ -24,12 +21,24 @@ class IPSEngine:
         self.packet_count = 0
         self.alert_count = 0
         self.log_messages = deque(maxlen=50)
-
+        
+        try:
+            self.host_ip = socket.gethostbyname(socket.gethostname())
+        except socket.gaierror:
+            self.host_ip = "127.0.0.1" 
+        logging.info(f"IPS Host IP identified as: {self.host_ip}. This traffic will be ignored.")
+        
         self.state_manager = StateManager()
         self.prevention_manager = PreventionManager(config.BLOCK_DURATION)
-        self.detection_engine = DetectionEngine(self.state_manager, self.prevention_manager, self)
+        self.detection_engine = DetectionEngine(self.state_manager, self.prevention_manager, self, self.host_ip)
 
     def _process_packet(self, packet):
+        # --- NEW: Manual Python-based filter for PCAP mode ---
+        # If we are in PCAP mode, we apply the filter here instead of in the sniff command.
+        if self.pcap_file and not (packet.haslayer(TCP) or packet.haslayer(ICMP)):
+            return
+        # --------------------------------------------------------
+            
         self.packet_count += 1
         self.detection_engine.inspect_packet(packet)
 
@@ -37,14 +46,17 @@ class IPSEngine:
         """
         Starts the packet sniffing process based on the source provided during initialization.
         """
+        bpf_filter = "icmp or tcp"
+        
         try:
             if self.pcap_file:
                 logging.info(f"Starting analysis of PCAP file: {self.pcap_file}...")
+                # --- MODIFIED: Removed the 'filter' argument to avoid using tcpdump ---
                 sniff(offline=self.pcap_file, prn=self._process_packet, store=False)
             elif self.interface:
                 logging.info(f"Starting live capture on interface: {self.interface}...")
                 logging.info("Press Ctrl+C to stop.")
-                sniff(iface=self.interface, prn=self._process_packet, store=False)
+                sniff(iface=self.interface, prn=self._process_packet, store=False, filter=bpf_filter)
             else:
                 logging.error("No packet source specified. Please provide a PCAP file (-r) or an interface (-i), or set one in config.py.")
                 return
@@ -79,6 +91,3 @@ class IPSEngine:
             print("="*50)
 
         logging.info("LiteShield IPS has stopped.")
-
-
-#engine logic slightly changed aftr a few refresh issues with the console 
